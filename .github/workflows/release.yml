@@ -45,7 +45,23 @@ jobs:
       - name: Build application
         run: pnpm run build
 
+      - name: Require Windows code-signing credentials
+        shell: pwsh
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK)) {
+            throw 'Add the WIN_CSC_LINK GitHub Actions secret with your trusted Windows signing certificate (base64 PFX/P12).'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_KEY_PASSWORD)) {
+            throw 'Add the WIN_CSC_KEY_PASSWORD GitHub Actions secret with the certificate password.'
+          }
+
       - name: Package Windows installer and update metadata
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: pnpm exec electron-builder --win nsis --publish never
 
       - name: Publish GitHub Release

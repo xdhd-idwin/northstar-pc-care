@@ -13,7 +13,6 @@ Some requested controls (CPU C-states, timer resolution, vendor GPU controls, pe
 - Windows 10 22H2 or Windows 11
 - Node.js 22.12 or newer and npm
 - PowerShell 5.1 or newer
-- Visual Studio Build Tools / Windows SDK only if you later package a signed installer
 
 ## Run locally
 
@@ -21,7 +20,7 @@ Some requested controls (CPU C-states, timer resolution, vendor GPU controls, pe
 2. In PowerShell, change to this project folder and run `npm install`.
 3. Run `npm run dev` to launch Vite and Electron.
 4. The packaged app requests administrator access when it opens. Accept one Windows UAC prompt per app launch; system changes then run in the already elevated app, without another prompt for each tweak. If you cancel, Windows closes the launch; start the app again and accept UAC to use it.
-5. For a distributable Windows build, run `npm run build` then `npm run dist`. Sign the installer before distributing it.
+5. For local development builds, run `npm run build`. A distributable installer requires the trusted code-signing certificate described below; `npm run dist` fails instead of creating an unsigned release installer.
 
 `npm run dev` uses Electron's isolated preload bridge and a strict Content Security Policy. For development, launch the terminal as Administrator before starting Electron if you need to apply system changes. Renderer code cannot invoke arbitrary PowerShell or shell commands. The main process validates tweak IDs against the catalog before calling the bundled script.
 
@@ -29,7 +28,18 @@ Some requested controls (CPU C-states, timer resolution, vendor GPU controls, pe
 
 Free permits up to 15 active catalog tweaks and includes the dashboard, DNS tools, startup manager, and app-managed revert controls. Cleaner is marked Pro and hidden behind the plan chooser. The plan chooser displays the requested €2/month and €20 one-time Pro prices, but checkout and paid-license activation are not configured; its purchase buttons clearly report this and do not take payment or unlock Pro. Real sales require checkout links plus a trusted server-side payment/license verification flow.
 
-The packaged app checks for updates before showing its main window using the public `xdhd-idwin/northstar-pc-care` GitHub Releases source in `electron/update-source.json`. The release workflow builds the installer and `latest.yml`, then publishes them as release assets when a version tag is pushed. A downloaded update is installed and the app relaunches; if checking fails or no newer version exists, Northstar opens normally. The local release is prepared for `v0.1.1`, but update downloads will only work after the public GitHub repository exists and its first release is published.
+The packaged app checks for updates before showing its main window using the public `xdhd-idwin/northstar-pc-care` GitHub Releases source in `electron/update-source.json`. The release workflow builds the installer and `latest.yml`, then publishes them as release assets when a version tag is pushed. A downloaded update is installed and the app relaunches; if checking fails or no newer version exists, Northstar opens normally. Release `v0.1.1` is published but unsigned. Install it manually as the first updater-enabled version; subsequent releases require the signing secrets below.
+
+## Windows code signing for releases
+
+Windows SmartScreen may warn that a new app is unrecognized. Northstar's current `v0.1.1` installer is unsigned. To publish signed releases, obtain a trusted Windows Authenticode signing identity from a certificate authority or a supported cloud signing service. A new signature identifies the publisher but may still need download reputation before SmartScreen stops warning.
+
+For a PFX/P12 certificate, add these repository Actions secrets under **Settings → Secrets and variables → Actions**:
+
+- `WIN_CSC_LINK`: the base64-encoded PFX/P12 certificate.
+- `WIN_CSC_KEY_PASSWORD`: its private-key password.
+
+Never commit a certificate, private key, or password to the repository. The release workflow requires both secrets and electron-builder verifies that the installer is signed before publishing. Use the same publisher identity for future releases. A self-signed certificate does not establish public SmartScreen trust.
 
 ## Project layout
 
