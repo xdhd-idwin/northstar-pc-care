@@ -1,0 +1,61 @@
+name: Build and publish Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure public GitHub update source
+        shell: pwsh
+        run: |
+          $parts = $env:GITHUB_REPOSITORY.Split('/')
+          $owner = $parts[0]
+          $repo = $parts[1]
+          @{ provider = 'github'; owner = $owner; repo = $repo } |
+            ConvertTo-Json | Set-Content electron/update-source.json -Encoding utf8
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $package | Add-Member -NotePropertyName repository -NotePropertyValue "https://github.com/$owner/$repo" -Force
+          $package.build | Add-Member -NotePropertyName publish -NotePropertyValue @(@{ provider = 'github'; owner = $owner; repo = $repo }) -Force
+          $package | ConvertTo-Json -Depth 30 | Set-Content package.json -Encoding utf8
+
+      - name: Build application
+        run: pnpm run build
+
+      - name: Package Windows installer and update metadata
+        run: pnpm exec electron-builder --win nsis --publish never
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $assets = @(Get-ChildItem release -File | Where-Object {
+            $_.Name -match '^Northstar PC Care Setup .*\.exe(\.blockmap)?$' -or $_.Name -eq 'latest.yml'
+          })
+          if (!($assets | Where-Object Name -eq 'latest.yml')) { throw 'latest.yml update metadata was not generated.' }
+          if (!($assets | Where-Object Name -match '^Northstar PC Care Setup .*\.exe$')) { throw 'Windows installer was not generated.' }
+          $files = @($assets | ForEach-Object { $_.FullName })
+          gh release create $tag @files --title "Northstar PC Care $tag" --generate-notes --verify-tag
