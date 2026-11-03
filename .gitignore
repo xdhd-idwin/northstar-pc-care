@@ -4,3 +4,7 @@ dist-electron/
 release/
 *.tsbuildinfo
 .env*
+!.env.example
+.dev.vars*
+!.dev.vars.example
+billing-service/data/

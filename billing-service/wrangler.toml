@@ -1,0 +1,17 @@
+name = "northstar-billing"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+[observability]
+enabled = true
+
+[vars]
+STRIPE_PRICE_MONTHLY = "price_1UX41SPPDIbtCa1WWaW4DMrO"
+STRIPE_PRICE_LIFETIME = "price_1UXOgRPPDIbtCa1W4sbhQKGN"
+CHECKOUT_SUCCESS_URL = "https://github.com/xdhd-idwin/northstar-pc-care"
+CHECKOUT_CANCEL_URL = "https://github.com/xdhd-idwin/northstar-pc-care"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "northstar-billing"
+database_id = "22b7475f-209b-4d8b-b596-2e0f26475124"

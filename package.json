@@ -1,6 +1,6 @@
 {
   "name": "northstar-pc-care",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "packageManager": "pnpm@11.25.0",
   "private": true,
   "description": "Windows system care desktop app starter",
@@ -52,6 +52,10 @@
       {
         "from": "electron/update-source.json",
         "to": "update-source.json"
+      },
+      {
+        "from": "electron/billing-source.json",
+        "to": "billing-source.json"
       }
     ],
     "win": {

@@ -15,6 +15,8 @@ const api: Bridge = {
   restoreDns: (index) => ipcRenderer.invoke('dns-restore', { index }),
   flushDns: () => ipcRenderer.invoke('dns-flush'),
   scanJunk: () => ipcRenderer.invoke('clean-scan'),
-  cleanJunk: (paths) => ipcRenderer.invoke('clean-run', paths)
+  cleanJunk: (paths) => ipcRenderer.invoke('clean-run', paths),
+  getBillingStatus: () => ipcRenderer.invoke('billing-status'),
+  startCheckout: (plan) => ipcRenderer.invoke('billing-checkout', plan)
 };
 contextBridge.exposeInMainWorld('northstar', api);

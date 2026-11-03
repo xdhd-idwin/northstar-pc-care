@@ -1,0 +1,12 @@
+{
+  "name": "northstar-billing-service",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute northstar-billing --remote --file=schema.sql"
+  },
+  "devDependencies": { "wrangler": "^4.69.0" }
+}

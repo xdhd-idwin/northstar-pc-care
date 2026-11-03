@@ -1,2 +1,8 @@
+packages:
+  - '.'
+  - 'billing-service'
+
 allowBuilds:
   electron-winstaller: true
+  esbuild: true
+  workerd: true
