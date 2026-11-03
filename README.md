@@ -30,7 +30,7 @@ Free permits up to 15 active catalog tweaks and includes the dashboard, DNS tool
 
 The packaged app checks the public `xdhd-idwin/northstar-pc-care` GitHub Releases feed before showing its main window. If a newer release exists, Northstar downloads and installs it, then relaunches; if no update exists or the check fails, the app opens normally. The app stores a stable billing installation ID under `%LOCALAPPDATA%\NorthstarPcCare`, and the Worker stores Pro entitlements in D1. Updating the app leaves this ID and the server-side entitlement intact, so Pro remains active on that Windows account and PC. The entitlement does not automatically transfer to another PC or Windows account.
 
-The release workflow builds the Windows installer and `latest.yml`, then publishes them as release assets when a version tag is pushed. Releases require the trusted Windows signing secrets below. Version `0.1.2` is a local build and has not yet been published; publish only after Live billing has been configured if real customers are expected to purchase Pro.
+The release workflow builds the Windows installer and `latest.yml`, then publishes them as release assets when a version tag is pushed. Releases require the trusted Windows signing secrets below. The locally installed `0.1.2` build is not a GitHub release. The next release must use a higher version (`0.1.3`) so it can update that build. Publish only after Live billing has been configured if real customers are expected to purchase Pro.
 
 ## Windows code signing for releases
 
