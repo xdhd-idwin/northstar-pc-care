@@ -1,6 +1,6 @@
 # Northstar PC Care
 
-Northstar is a Windows 10/11 desktop utility for reviewing and applying reversible system tweaks. The desktop host and command validation layer use Rust and Tauri 2; the interface uses React and TypeScript. The current Windows operations adapter still invokes the audited PowerShell engine in `electron/powershell/SystemOps.ps1`; a complete Rust port of every Windows operation is not finished.
+Northstar is a Windows 10/11 desktop utility for reviewing and applying reversible system tweaks. The desktop host and command validation layer use Rust and Tauri 2; the interface uses React and TypeScript. Registry tweaks, registry backups/restores, profile registry batches, and active-tweak snapshots now run through the Windows registry API in Rust. Other Windows operations still use the compatibility PowerShell engine in `electron/powershell/SystemOps.ps1`; the full Rust port is in progress.
 
 The catalog contains 143 entries. 107 are marked actionable through supported registry, service-startup, power, or task operations; 36 are review-only because they need device-specific work or a safer implementation. “Actionable” is not a performance guarantee, and Windows build, drivers, or device policy may still prevent an operation.
 
@@ -40,15 +40,15 @@ Updater signatures validate the update package but are separate from Windows Aut
 - Ping is a one-shot latency sample to Cloudflare DNS, not game-server latency.
 - Restore point creation can fail if System Protection is off, policy blocks it, or a restore point was created recently.
 - Review-only catalog entries are descriptions, not executable tweaks.
-- System operations still run through the existing PowerShell adapter. The app has not yet been audited or tested across Windows versions and hardware.
+- Metrics, startup controls, DNS, Cleaner, services, power plans/settings, Nagle, hibernation, compatibility tasks, and restore point creation still use the PowerShell adapter. The Rust registry engine has unit coverage for hive validation and backup data encoding; the app has not yet been audited across Windows versions and hardware.
 
 ## Project layout
 
 ```text
 northstar-pc-care/
   src/                    React UI, Tauri bridge, catalog, profiles, update check
-  src-tauri/              Rust Tauri shell, command validation, updater configuration
-  electron/powershell/    Existing Windows system-operation adapter
+  src-tauri/              Rust Tauri shell, Windows registry engine, command validation, updater configuration
+  electron/powershell/    Compatibility adapter for Windows operations not yet ported
   billing-service/        Cloudflare Worker source for checkout and entitlement
   .github/workflows/      Signed Windows release and updater-feed workflow
 ```

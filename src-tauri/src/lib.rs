@@ -6,6 +6,8 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
+use windows_registry::{CURRENT_USER, Key, LOCAL_MACHINE, Type as RegistryType};
+use windows_result::Error as RegistryError;
 
 const CATALOG_JSON: &str = include_str!("../../src/shared/catalog.json");
 const FREE_TWEAK_LIMIT: usize = 15;
@@ -54,6 +56,9 @@ fn resource_or_dev(app: &AppHandle, resource: &str, dev: &str) -> Result<PathBuf
 }
 
 fn run_system(app: &AppHandle, payload: Value) -> Result<Value, String> {
+    if let Some(reply) = run_native_system(&payload)? {
+        return Ok(reply);
+    }
     let script = resource_or_dev(
         app,
         "powershell/SystemOps.ps1",
@@ -112,6 +117,551 @@ fn run_system(app: &AppHandle, payload: Value) -> Result<Value, String> {
     };
     let _ = fs::remove_dir_all(temp);
     reply
+}
+
+fn run_native_system(payload: &Value) -> Result<Option<Value>, String> {
+    match payload.get("Action").and_then(Value::as_str) {
+        Some("Snapshots") => Ok(Some(json!({"ok":true,"data":registry_snapshots()?}))),
+        Some("Tweak") => {
+            if payload.get("CreateRestorePoint").and_then(Value::as_bool) == Some(true) {
+                return Ok(None);
+            }
+            let tweak = payload.get("Tweak").ok_or("Invalid tweak payload.")?;
+            if !matches!(
+                tweak.get("kind").and_then(Value::as_str),
+                Some("DWord" | "String")
+            ) {
+                return Ok(None);
+            }
+            Ok(Some(apply_registry_tweak(payload)?))
+        }
+        Some("TweakBatch") => {
+            if payload.get("CreateRestorePoint").and_then(Value::as_bool) == Some(true) {
+                return Ok(None);
+            }
+            let items = payload
+                .get("Items")
+                .and_then(Value::as_array)
+                .ok_or("Invalid optimization profile.")?;
+            if items.is_empty() || items.len() > 20 {
+                return Ok(Some(error("Invalid optimization profile.")));
+            }
+            let mut applied = 0;
+            for item in items {
+                let reply = apply_registry_tweak(
+                    &json!({"Id":item.get("id"),"Enable":true,"Tweak":item.get("tweak")}),
+                )?;
+                if reply.get("ok").and_then(Value::as_bool) != Some(true) {
+                    let title = item.get("id").and_then(Value::as_str).unwrap_or("tweak");
+                    let message = reply
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("The registry operation failed.");
+                    return Ok(Some(error(format!(
+                        "Profile applied {applied} of {} settings before {title} failed: {message}",
+                        items.len()
+                    ))));
+                }
+                applied += 1;
+            }
+            Ok(Some(
+                json!({"ok":true,"message":format!("Applied {applied} reviewed settings. Each change has an app-managed backup.")}),
+            ))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn valid_registry_path(path: &str) -> bool {
+    let Some((hive, subkey)) = path.split_once('\\') else {
+        return false;
+    };
+    matches!(hive, "HKCU" | "HKLM")
+        && !subkey.is_empty()
+        && subkey.split('\\').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part.chars().all(|c| {
+                    c.is_ascii_alphanumeric() || matches!(c, ' ' | '_' | '-' | '.' | '{' | '}')
+                })
+        })
+}
+
+fn registry_key_raw(path: &str, create: bool) -> windows_registry::Result<Key> {
+    let (hive, subkey) = path.split_once('\\').expect("validated registry path");
+    let root = if hive == "HKCU" {
+        CURRENT_USER
+    } else {
+        LOCAL_MACHINE
+    };
+    if create {
+        root.create(subkey)
+    } else {
+        root.open(subkey)
+    }
+}
+
+fn registry_key(path: &str, create: bool) -> Result<Key, String> {
+    if !valid_registry_path(path) {
+        return Err("Registry path is outside the supported hives.".into());
+    }
+    registry_key_raw(path, create).map_err(|e| e.to_string())
+}
+
+fn registry_not_found(error: &RegistryError) -> bool {
+    error.code().0 == 0x8007_0002u32 as i32 || error.code().0 == 0x8007_0003u32 as i32
+}
+
+fn registry_type_code(kind: &str) -> Result<u32, String> {
+    match kind {
+        "None" => Ok(0),
+        "String" => Ok(1),
+        "ExpandString" => Ok(2),
+        "Binary" => Ok(3),
+        "DWord" => Ok(4),
+        "DWordBigEndian" => Ok(5),
+        "Link" => Ok(6),
+        "MultiString" => Ok(7),
+        "ResourceList" => Ok(8),
+        "FullResourceDescriptor" => Ok(9),
+        "ResourceRequirementsList" => Ok(10),
+        "QWord" => Ok(11),
+        _ => Err(format!("Unsupported saved registry value type: {kind}.")),
+    }
+}
+
+fn registry_json(kind: RegistryType, bytes: &[u8]) -> Value {
+    match kind {
+        RegistryType::U32 if bytes.len() == 4 => {
+            json!(u32::from_le_bytes(
+                bytes.try_into().expect("checked length")
+            ))
+        }
+        RegistryType::U64 if bytes.len() == 8 => {
+            json!(u64::from_le_bytes(
+                bytes.try_into().expect("checked length")
+            ))
+        }
+        RegistryType::String | RegistryType::ExpandString => {
+            let words: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|x| u16::from_le_bytes([x[0], x[1]]))
+                .take_while(|x| *x != 0)
+                .collect();
+            json!(String::from_utf16_lossy(&words))
+        }
+        RegistryType::Other(7) => {
+            let words: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|x| u16::from_le_bytes([x[0], x[1]]))
+                .collect();
+            let parts: Vec<_> = words
+                .split(|x| *x == 0)
+                .filter(|x| !x.is_empty())
+                .map(String::from_utf16_lossy)
+                .collect();
+            json!(parts)
+        }
+        RegistryType::Bytes | RegistryType::Other(_) => {
+            json!(bytes.iter().copied().collect::<Vec<_>>())
+        }
+        _ => Value::Null,
+    }
+}
+
+fn legacy_registry_bytes(kind: &str, value: &Value) -> Result<(RegistryType, Vec<u8>), String> {
+    let code = registry_type_code(kind)?;
+    let ty = match code {
+        0 => RegistryType::Other(0),
+        1 => RegistryType::String,
+        2 => RegistryType::ExpandString,
+        3 => RegistryType::Bytes,
+        4 => RegistryType::U32,
+        5..=10 => RegistryType::Other(code),
+        11 => RegistryType::U64,
+        _ => unreachable!(),
+    };
+    let bytes = match code {
+        0 => Vec::new(),
+        1 | 2 => {
+            let text = value.as_str().ok_or("Saved registry string is invalid.")?;
+            text.encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(u16::to_le_bytes)
+                .collect()
+        }
+        3 => value
+            .as_array()
+            .ok_or("Saved registry binary value is invalid.")?
+            .iter()
+            .map(|x| x.as_u64().filter(|b| *b <= 255).map(|b| b as u8))
+            .collect::<Option<Vec<_>>>()
+            .ok_or("Saved registry bytes are invalid.")?,
+        5 => value
+            .as_array()
+            .and_then(|a| {
+                let bytes = a
+                    .iter()
+                    .map(|x| x.as_u64().filter(|b| *b <= 255).map(|b| b as u8))
+                    .collect::<Option<Vec<_>>>()?;
+                <[u8; 4]>::try_from(bytes).ok().map(|b| b.to_vec())
+            })
+            .or_else(|| value.as_u64().map(|n| (n as u32).to_be_bytes().to_vec()))
+            .ok_or("Saved big-endian registry value is invalid.")?,
+        6 => {
+            let text = value
+                .as_str()
+                .ok_or("Saved registry link value is invalid.")?;
+            text.encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(u16::to_le_bytes)
+                .collect()
+        }
+        7 => {
+            let parts = value
+                .as_array()
+                .ok_or("Saved registry multi-string is invalid.")?;
+            let mut words = Vec::new();
+            for part in parts {
+                words.extend(
+                    part.as_str()
+                        .ok_or("Saved registry multi-string item is invalid.")?
+                        .encode_utf16(),
+                );
+                words.push(0);
+            }
+            words.push(0);
+            words.into_iter().flat_map(u16::to_le_bytes).collect()
+        }
+        8..=10 => value
+            .as_array()
+            .ok_or("Saved registry resource value is invalid.")?
+            .iter()
+            .map(|x| x.as_u64().filter(|b| *b <= 255).map(|b| b as u8))
+            .collect::<Option<Vec<_>>>()
+            .ok_or("Saved registry resource bytes are invalid.")?,
+        4 => (value.as_u64().ok_or("Saved registry number is invalid.")? as u32)
+            .to_le_bytes()
+            .to_vec(),
+        11 => value
+            .as_u64()
+            .ok_or("Saved registry number is invalid.")?
+            .to_le_bytes()
+            .to_vec(),
+        _ => unreachable!(),
+    };
+    Ok((ty, bytes))
+}
+
+fn read_registry_value(path: &str, name: &str) -> Result<Option<(u32, Vec<u8>)>, String> {
+    if !valid_registry_path(path) {
+        return Err("Registry path is outside the supported hives.".into());
+    }
+    let key = match registry_key_raw(path, false) {
+        Ok(key) => key,
+        Err(error) if registry_not_found(&error) => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let Some((_, value)) = key
+        .values()
+        .map_err(|e| e.to_string())?
+        .find(|(saved_name, _)| saved_name.eq_ignore_ascii_case(name))
+    else {
+        return Ok(None);
+    };
+    Ok(Some((u32::from(value.ty()), value.as_ref().to_vec())))
+}
+
+fn set_registry_bytes(path: &str, name: &str, code: u32, bytes: &[u8]) -> Result<(), String> {
+    let ty = match code {
+        0 => RegistryType::Other(0),
+        1 => RegistryType::String,
+        2 => RegistryType::ExpandString,
+        3 => RegistryType::Bytes,
+        4 => RegistryType::U32,
+        11 => RegistryType::U64,
+        n => RegistryType::Other(n),
+    };
+    registry_key(path, true)?
+        .set_bytes(name, ty, bytes)
+        .map_err(|e| e.to_string())
+}
+
+fn write_json(path: &std::path::Path, value: &Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let temp = path.with_extension("tmp");
+    fs::write(&temp, serde_json::to_vec(value).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    fs::rename(&temp, path).map_err(|e| e.to_string())
+}
+
+fn registry_backup_path(id: &str) -> Result<PathBuf, String> {
+    if id.len() > 32 || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+        return Err("Invalid tweak ID.".into());
+    }
+    Ok(data_dir()?.join("backups").join(format!("{id}.json")))
+}
+
+fn apply_registry_tweak(payload: &Value) -> Result<Value, String> {
+    let id = payload
+        .get("Id")
+        .and_then(Value::as_str)
+        .ok_or("Invalid tweak ID.")?;
+    let enable = payload
+        .get("Enable")
+        .and_then(Value::as_bool)
+        .ok_or("Invalid toggle value.")?;
+    let tweak = payload.get("Tweak").ok_or("Invalid tweak payload.")?;
+    let path = tweak
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or("Invalid registry path.")?;
+    let name = tweak
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|x| !x.is_empty() && !x.contains('\\') && !x.contains('\0'))
+        .ok_or("Invalid registry value name.")?;
+    let backup_path = registry_backup_path(id)?;
+    if enable {
+        let kind = tweak
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or("Invalid registry value type.")?;
+        let (type_code, bytes) = match kind {
+            "DWord" => {
+                let number = tweak
+                    .get("value")
+                    .and_then(Value::as_u64)
+                    .ok_or("Invalid DWord value.")? as u32;
+                (4, number.to_le_bytes().to_vec())
+            }
+            "String" => {
+                let text = tweak
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .ok_or("Invalid string value.")?;
+                (
+                    1,
+                    text.encode_utf16()
+                        .chain(std::iter::once(0))
+                        .flat_map(u16::to_le_bytes)
+                        .collect(),
+                )
+            }
+            _ => {
+                return Err("This registry value type is not supported by the Rust engine.".into());
+            }
+        };
+        let backup = if backup_path.exists() {
+            serde_json::from_slice::<Value>(&fs::read(&backup_path).map_err(|e| e.to_string())?)
+                .map_err(|_| "The saved tweak backup is invalid; it was left unchanged.")?
+        } else {
+            let original = read_registry_value(path, name)?;
+            let key_existed = match registry_key_raw(path, false) {
+                Ok(_) => true,
+                Err(error) if registry_not_found(&error) => false,
+                Err(error) => return Err(error.to_string()),
+            };
+            let (old_type, old_bytes, old_value, old_kind) = match original {
+                Some((code, raw)) => {
+                    let ty = match code {
+                        0 => RegistryType::Other(0),
+                        1 => RegistryType::String,
+                        2 => RegistryType::ExpandString,
+                        3 => RegistryType::Bytes,
+                        4 => RegistryType::U32,
+                        11 => RegistryType::U64,
+                        other => RegistryType::Other(other),
+                    };
+                    let kind = match code {
+                        0 => "None",
+                        1 => "String",
+                        2 => "ExpandString",
+                        3 => "Binary",
+                        4 => "DWord",
+                        5 => "DWordBigEndian",
+                        6 => "Link",
+                        7 => "MultiString",
+                        8 => "ResourceList",
+                        9 => "FullResourceDescriptor",
+                        10 => "ResourceRequirementsList",
+                        11 => "QWord",
+                        _ => "Binary",
+                    };
+                    (Some(code), Some(raw.clone()), registry_json(ty, &raw), kind)
+                }
+                None => (None, None, Value::Null, "DWord"),
+            };
+            let mut backup = json!({
+                "id":id,"key":path,"name":name,"keyExisted":key_existed,
+                "valueExisted":old_type.is_some(),"value":old_value,"kind":old_kind,
+                "enabled":false
+            });
+            if let Some(code) = old_type {
+                backup["registryType"] = json!(code);
+                backup["rawData"] = json!(old_bytes.unwrap_or_default());
+            }
+            backup
+        };
+        write_json(&backup_path, &backup)?;
+        set_registry_bytes(path, name, type_code, &bytes)?;
+        let mut backup = backup;
+        backup["enabled"] = json!(true);
+        write_json(&backup_path, &backup)?;
+        add_native_log(format!("Applied {id}"))?;
+        Ok(json!({"ok":true,"message":"Change applied and the original registry state was saved."}))
+    } else {
+        if !backup_path.exists() {
+            return Ok(json!({"ok":true,"message":"No saved state exists; nothing to restore."}));
+        }
+        let mut backup: Value =
+            serde_json::from_slice(&fs::read(&backup_path).map_err(|e| e.to_string())?)
+                .map_err(|_| "The saved tweak backup is invalid; it was left unchanged.")?;
+        if backup.get("valueExisted").and_then(Value::as_bool) == Some(true) {
+            if let (Some(code), Some(raw)) = (
+                backup.get("registryType").and_then(Value::as_u64),
+                backup.get("rawData").and_then(Value::as_array),
+            ) {
+                let raw = raw
+                    .iter()
+                    .map(|x| x.as_u64().filter(|b| *b <= 255).map(|b| b as u8))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or("The saved registry bytes are invalid.")?;
+                set_registry_bytes(path, name, code as u32, &raw)?;
+            } else {
+                let kind = backup
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .ok_or("Saved registry kind is missing.")?;
+                let (ty, bytes) = legacy_registry_bytes(kind, &backup["value"])?;
+                set_registry_bytes(path, name, u32::from(ty), &bytes)?;
+            }
+        } else {
+            if !valid_registry_path(path) {
+                return Err("Saved registry path is outside the supported hives.".into());
+            }
+            match registry_key_raw(path, false) {
+                Ok(key) => {
+                    if let Err(e) = key.remove_value(name) {
+                        if !registry_not_found(&e) {
+                            return Err(e.to_string());
+                        }
+                    }
+                }
+                Err(error) if registry_not_found(&error) => {}
+                Err(error) => return Err(error.to_string()),
+            }
+            if backup.get("keyExisted").and_then(Value::as_bool) == Some(false) {
+                remove_empty_registry_key(path)?;
+            }
+        }
+        backup["enabled"] = json!(false);
+        write_json(&backup_path, &backup)?;
+        add_native_log(format!("Reverted {id}"))?;
+        Ok(json!({"ok":true,"message":"Saved registry state restored."}))
+    }
+}
+
+fn remove_empty_registry_key(path: &str) -> Result<(), String> {
+    let Some((parent, name)) = path.rsplit_once('\\') else {
+        return Ok(());
+    };
+    let Ok(key) = registry_key(path, false) else {
+        return Ok(());
+    };
+    if key.values().map_err(|e| e.to_string())?.next().is_some()
+        || key.keys().map_err(|e| e.to_string())?.next().is_some()
+    {
+        return Ok(());
+    }
+    drop(key);
+    registry_key(parent, false)?
+        .remove_tree(name)
+        .map_err(|e| e.to_string())
+}
+
+fn registry_snapshots() -> Result<Vec<Value>, String> {
+    let mut snapshots = Vec::new();
+    let root = data_dir()?;
+    for folder in [
+        "backups",
+        "services",
+        "powerplans",
+        "powersettings",
+        "nagle",
+        "hibernation",
+        "compatibilitytasks",
+    ] {
+        let path = root.join(folder);
+        let Ok(entries) = fs::read_dir(path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.path().extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(bytes) = fs::read(entry.path()) else {
+                continue;
+            };
+            let Ok(backup) = serde_json::from_slice::<Value>(&bytes) else {
+                continue;
+            };
+            let Some(id) = backup.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            snapshots.push(json!({"id":id,"enabled":backup.get("enabled").and_then(Value::as_bool).unwrap_or(false),"restorable":true}));
+        }
+    }
+    Ok(snapshots)
+}
+
+fn add_native_log(message: String) -> Result<(), String> {
+    let path = data_dir()?.join("operations.json");
+    let mut items = match fs::read(&path)
+        .ok()
+        .and_then(|data| serde_json::from_slice::<Value>(&data).ok())
+    {
+        Some(Value::Array(items)) => items,
+        Some(Value::Object(item)) => vec![Value::Object(item)],
+        _ => Vec::new(),
+    };
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    items.push(json!({"time":seconds,"message":message}));
+    fs::write(path, serde_json::to_vec(&items).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_paths_cannot_escape_supported_hives() {
+        assert!(valid_registry_path("HKCU\\Software\\Northstar"));
+        assert!(valid_registry_path(
+            "HKLM\\SYSTEM\\CurrentControlSet\\Services\\{01234567-89ab-cdef-0123-456789abcdef}"
+        ));
+        assert!(!valid_registry_path("HKCR\\Software\\Northstar"));
+        assert!(!valid_registry_path("HKCU\\..\\Run"));
+        assert!(!valid_registry_path("HKLM\\"));
+    }
+
+    #[test]
+    fn registry_restore_codec_keeps_supported_types() {
+        let (ty, dword) = legacy_registry_bytes("DWord", &json!(4294967295u64)).unwrap();
+        assert_eq!(u32::from(ty), 4);
+        assert_eq!(registry_json(ty, &dword), json!(4294967295u64));
+
+        let (ty, multi) = legacy_registry_bytes("MultiString", &json!(["one", "two"])).unwrap();
+        assert_eq!(u32::from(ty), 7);
+        assert_eq!(registry_json(ty, &multi), json!(["one", "two"]));
+    }
 }
 
 fn item_by_id(id: &str) -> Option<&'static Value> {
