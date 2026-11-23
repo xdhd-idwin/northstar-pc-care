@@ -1,6 +1,6 @@
 {
   "name": "northstar-pc-care",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "packageManager": "pnpm@11.25.0",
   "private": true,
   "description": "Windows system care desktop app starter",

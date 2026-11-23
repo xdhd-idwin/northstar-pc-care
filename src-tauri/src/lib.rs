@@ -245,16 +245,20 @@ fn registry_json(kind: RegistryType, bytes: &[u8]) -> Value {
         }
         RegistryType::String | RegistryType::ExpandString => {
             let words: Vec<u16> = bytes
-                .chunks_exact(2)
-                .map(|x| u16::from_le_bytes([x[0], x[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|x| u16::from_le_bytes(*x))
                 .take_while(|x| *x != 0)
                 .collect();
             json!(String::from_utf16_lossy(&words))
         }
         RegistryType::Other(7) => {
             let words: Vec<u16> = bytes
-                .chunks_exact(2)
-                .map(|x| u16::from_le_bytes([x[0], x[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|x| u16::from_le_bytes(*x))
                 .collect();
             let parts: Vec<_> = words
                 .split(|x| *x == 0)
@@ -264,7 +268,7 @@ fn registry_json(kind: RegistryType, bytes: &[u8]) -> Value {
             json!(parts)
         }
         RegistryType::Bytes | RegistryType::Other(_) => {
-            json!(bytes.iter().copied().collect::<Vec<_>>())
+            json!(bytes.to_vec())
         }
         _ => Value::Null,
     }
@@ -545,10 +549,10 @@ fn apply_registry_tweak(payload: &Value) -> Result<Value, String> {
             }
             match registry_key_raw(path, false) {
                 Ok(key) => {
-                    if let Err(e) = key.remove_value(name) {
-                        if !registry_not_found(&e) {
-                            return Err(e.to_string());
-                        }
+                    if let Err(e) = key.remove_value(name)
+                        && !registry_not_found(&e)
+                    {
+                        return Err(e.to_string());
                     }
                 }
                 Err(error) if registry_not_found(&error) => {}

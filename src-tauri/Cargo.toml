@@ -1,6 +1,6 @@
 [package]
 name = "northstar-pc-care"
-version = "0.1.4"
+version = "0.1.5"
 description = "Windows system care desktop app"
 authors = ["Northstar PC Care"]
 license = "MIT"
