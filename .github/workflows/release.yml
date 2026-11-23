@@ -62,7 +62,8 @@ jobs:
           if (-not $archive) { throw 'Tauri NSIS installer was not generated.' }
           $signaturePath = "$($archive.FullName).sig"
           if (-not (Test-Path -LiteralPath $signaturePath)) { throw 'Tauri updater signature was not generated.' }
-          $assetName = [uri]::EscapeDataString($archive.Name)
+          # gh release create publishes Windows asset names with spaces normalized to dots.
+          $assetName = $archive.Name.Replace(' ', '.')
           $feed = @{
             version = $version
             notes = "Northstar PC Care $version"
