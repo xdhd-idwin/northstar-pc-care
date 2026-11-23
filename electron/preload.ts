@@ -5,6 +5,12 @@ const api: Bridge = {
   getSnapshots: () => ipcRenderer.invoke('snapshots'),
   runTweak: (id, enable) => ipcRenderer.invoke('tweak', { id, enable }),
   runTweakBatch: (ids) => ipcRenderer.invoke('tweak-batch', ids),
+  runProfile: (ids) => ipcRenderer.invoke('profile-run', ids),
+  onProfileProgress: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: {completed:number;total:number;current:string}) => callback(progress);
+    ipcRenderer.on('profile-progress', listener);
+    return () => ipcRenderer.removeListener('profile-progress', listener);
+  },
   revertAll: () => ipcRenderer.invoke('revert-all'),
   getStartup: () => ipcRenderer.invoke('startup-scan'),
   setStartup: (id, enable) => ipcRenderer.invoke('startup-set', { id, enable }),

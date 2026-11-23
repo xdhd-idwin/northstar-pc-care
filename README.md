@@ -1,6 +1,6 @@
 # Northstar PC Care
 
-A Windows 10/11 desktop utility built with Electron, React, TypeScript, and a constrained PowerShell backend. Its catalog has 143 distinct entries across the requested categories: 107 are actionable through reversible registry, service-startup, power-plan, power-setting, or scheduled-task changes and 36 remain review-only with an explanation of why they need hardware-specific, user-selected, or security-sensitive handling. The network page includes DNS provider selection, restore, DNS cache flush, and backed-up per-adapter Nagle controls. It also includes a system dashboard, cleanup preview, and startup Run-key management.
+A Windows 10/11 desktop utility currently built with Electron, React, TypeScript, and a constrained PowerShell backend. Its catalog has 143 distinct entries across the requested categories: 107 are actionable through reversible registry, service-startup, power-plan, power-setting, or scheduled-task changes and 36 remain review-only with an explanation of why they need hardware-specific, user-selected, or security-sensitive handling. The network page includes DNS provider selection, restore, DNS cache flush, and backed-up per-adapter Nagle controls. It also includes a system dashboard, cleanup preview, startup Run-key management, and locally saved/shareable tweak profiles.
 
 ## Safety and scope
 
@@ -27,6 +27,10 @@ Some requested controls (CPU C-states, timer resolution, vendor GPU controls, pe
 ## Plans and updates
 
 Free permits up to 15 active catalog tweaks and includes the dashboard, DNS tools, startup manager, and app-managed revert controls. Pro offers unlimited tweaks, Cleaner, and all Northstar features for €2/month or €20 one-time. Checkout is implemented through the Cloudflare Worker in `billing-service/`; the desktop app contains only its public Worker URL, while Stripe API and webhook secrets stay in Cloudflare. The current Worker and price IDs are configured for Stripe Sandbox. Configure separate Live prices, API key, webhook signing secret, and deploy the Worker before accepting real payments.
+
+Profiles store the currently active tweak IDs in local app storage. Shared profiles are portable JSON copied through the system clipboard; importing one validates it against the current allowlisted catalog. Applying a profile enables its included tweaks and leaves other active tweaks as-is. Free-plan limits still apply when profiles are applied. Profile data is local to the current Windows user and is not part of the billing entitlement, so it does not affect Pro status after an app update.
+
+Cleaner is Pro-only and previews eligible temporary/cache files older than seven days before removal. It rechecks allowed directories, age, and reparse-point status when removing files. DNS changes use Windows' family-specific DNS client objects to set or restore IPv4 and IPv6 independently; the original values are saved per adapter.
 
 The packaged app checks the public `xdhd-idwin/northstar-pc-care` GitHub Releases feed before showing its main window. If a newer release exists, Northstar downloads and installs it, then relaunches; if no update exists or the check fails, the app opens normally. The app stores a stable billing installation ID under `%LOCALAPPDATA%\NorthstarPcCare`, and the Worker stores Pro entitlements in D1. Updating the app leaves this ID and the server-side entitlement intact, so Pro remains active on that Windows account and PC. The entitlement does not automatically transfer to another PC or Windows account.
 
@@ -63,6 +67,8 @@ northstar-pc-care/
     shared/types.ts
   README.md
 ```
+
+The requested Rust desktop migration has not been completed in this version. The current Windows environment has the Rust compiler but does not have the Visual C++ linker/build tools required to build a native Windows Tauri application. Do not describe this Electron release as a Rust build.
 
 ## Reversion and data
 

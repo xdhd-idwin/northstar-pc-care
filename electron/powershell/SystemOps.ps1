@@ -143,13 +143,18 @@ function Get-CompatibilityTelemetryTasks {
 }
 function Convert-NetworkInterfaceIndex($value) {
   $parsed=0
-  if($null -eq $value -or ![int]::TryParse([string]$value,[ref]$parsed) -or $parsed -lt 1 -or $parsed -gt 65535) { throw 'The network adapter ID is invalid. Refresh the adapter list and try again.' }
-  return $parsed
+  if($null -eq $value) { throw 'The selected network adapter ID is missing. Refresh the adapter list and select it again.' }
+  $text=[string]$value
+  if($text -notmatch '^[0-9]{1,5}$' -or ![int]::TryParse($text,[ref]$parsed) -or $parsed -lt 1 -or $parsed -gt 65535) { throw 'The selected network adapter ID is invalid. Refresh the adapter list and select it again.' }
+  return [int]$parsed
 }
 function Set-DnsFamily($interfaceIndex,[string]$family,[string[]]$addresses) {
   $ix=Convert-NetworkInterfaceIndex $interfaceIndex
-  if(@($addresses).Count -gt 0){$parameters=@{InterfaceIndex=$ix;AddressFamily=$family;ServerAddresses=@($addresses);ErrorAction='Stop'};Set-DnsClientServerAddress @parameters}
-  else {$parameters=@{InterfaceIndex=$ix;AddressFamily=$family;ResetServerAddresses=$true;ErrorAction='Stop'};Set-DnsClientServerAddress @parameters}
+  if($family -notin @('IPv4','IPv6')) { throw 'Unsupported DNS address family.' }
+  $dnsClient=Get-DnsClientServerAddress -InterfaceIndex $ix -AddressFamily $family -ErrorAction Stop
+  if(!$dnsClient){throw "Windows could not read the $family DNS settings for adapter $ix."}
+  if(@($addresses).Count -gt 0){Set-DnsClientServerAddress -InputObject $dnsClient -ServerAddresses @($addresses) -ErrorAction Stop}
+  else {Set-DnsClientServerAddress -InputObject $dnsClient -ResetServerAddresses -ErrorAction Stop}
 }
 function Restore-DnsBackup($backup) {
   $ix=Convert-NetworkInterfaceIndex $backup.interfaceIndex
@@ -167,7 +172,8 @@ function Get-CleanupRoots {
   }
   return @($roots|Where-Object{$_ -and (Test-Path -LiteralPath $_ -PathType Container)}|Select-Object -Unique)
 }
-function Ensure-RestorePoint {
+function Ensure-RestorePoint([bool]$requested=$true) {
+  if(!$requested){return 'A Windows restore point was skipped; Northstar still saved the original setting for in-app restore.'}
   if($req.PSObject.Properties.Name -contains 'CreateRestorePoint' -and !$req.CreateRestorePoint) { return 'Windows restore point skipped by your choice; the app saved an individual settings backup.' }
   try { Checkpoint-Computer -Description 'Northstar PC Care change' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop; return $null }
   catch { return ('System Restore point was unavailable: ' + $_.Exception.Message) }
@@ -244,7 +250,7 @@ try {
     'DnsFlush' { Clear-DnsClientCache -ErrorAction Stop;Write-Result @{ok=$true;message='Windows DNS resolver cache flushed.'};break }
     'TweakBatch' {
       $items=@($req.Items);if($items.Count -lt 1 -or $items.Count -gt 20){throw 'Invalid optimization profile.'}
-      $restoreWarning=Ensure-RestorePoint;$applied=0
+      $restoreWarning=Ensure-RestorePoint ([bool]$req.CreateRestorePoint);$applied=0
       foreach($entry in $items){
         try {
           $id=[string]$entry.id;$t=$entry.tweak
@@ -366,7 +372,7 @@ try {
       $backupDir=Join-Path $req.DataDir 'backups'; New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
       $backup=Join-Path $backupDir ($id+'.json')
       if([bool]$req.Enable) {
-        $restoreWarning=Ensure-RestorePoint
+        $restoreWarning=Ensure-RestorePoint ([bool]$req.CreateRestorePoint)
         if(!(Test-Path -LiteralPath $backup)) {
           $exists=Test-Path -LiteralPath $regPath
           $present=$false;$old=$null;$oldKind=$null

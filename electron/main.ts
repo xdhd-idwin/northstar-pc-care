@@ -161,6 +161,27 @@ ipcMain.handle('tweak-batch',async(_event,ids:unknown)=>{
   if(choice===null) return {ok:false,message:'Cancelled. No tweaks were applied.',code:'USER_CANCELLED'};
   return runPs({Action:'TweakBatch',CreateRestorePoint:choice,Items:safeItems});
 });
+ipcMain.handle('profile-run',async(event,ids:unknown)=>{
+  if(!Array.isArray(ids)||ids.length>catalog.length||ids.some(x=>typeof x!=='string')||new Set(ids).size!==ids.length)return {ok:false,message:'This profile has an invalid or duplicate tweak list.'};
+  const items=ids.map(id=>catalog.find(t=>t.id===id));
+  if(items.some(t=>!t||!t.applicable||t.risk==='High'))return {ok:false,message:'This profile contains a review-only or blocked tweak.'};
+  const active=await getEnabledTweakIds().catch(error=>{throw new Error(`Could not read current tweak state: ${String(error)}`);});
+  const pending=items.filter(t=>!active.has(t!.id));
+  const billing=await getProEntitlement();
+  if(!billing.pro&&active.size+pending.length>freeTweakLimit)return {ok:false,message:`Free includes up to ${freeTweakLimit} active tweaks. Remove tweaks from this profile or choose Pro.`,code:'FREE_LIMIT'};
+  if(pending.length===0){event.sender.send('profile-progress',{completed:1,total:1,current:'Profile is already applied'});return {ok:true,message:'This profile is already applied.'};}
+  const choice=await askForRestorePoint(pending.length);
+  if(choice===null)return {ok:false,message:'Cancelled. No profile changes were applied.',code:'USER_CANCELLED'};
+  let completed=0;
+  for(const item of pending){
+    event.sender.send('profile-progress',{completed,total:pending.length,current:item!.title});
+    const result=await runPs({Action:'Tweak',Id:item!.id,Enable:true,CreateRestorePoint:choice&&completed===0,Tweak:{key:item!.key,name:item!.name,kind:item!.kind,value:item!.value,serviceName:item!.serviceName,powerSetting:item!.powerSetting,powerAc:item!.powerAc,powerDc:item!.powerDc}});
+    if(!result.ok){event.sender.send('profile-progress',{completed,total:pending.length,current:`Stopped at ${item!.title}`});return {ok:false,message:`Applied ${completed} of ${pending.length} profile tweaks. ${item!.title}: ${result.message}`};}
+    completed++;
+    event.sender.send('profile-progress',{completed,total:pending.length,current:item!.title});
+  }
+  return {ok:true,message:`Applied ${completed} profile tweaks. Each change has an app-managed backup.`};
+});
 ipcMain.handle('revert-all',()=>runPs({Action:'RevertAll'}));
 ipcMain.handle('startup-scan',async()=>{const r=await runPs({Action:'StartupScan'});return Array.isArray(r.data)?r.data:r.data?[r.data]:[];});
 ipcMain.handle('startup-set',async(_event,arg:{id:string;enable:boolean})=>{
@@ -173,8 +194,8 @@ ipcMain.handle('scheduled-startup-set',async(_event,arg:{id:string;enable:boolea
   return runPs({Action:'ScheduledStartupSet',Id:arg.id,Enable:arg.enable});
 });
 ipcMain.handle('dns-scan',async()=>{const r=await runPs({Action:'DnsScan'});return Array.isArray(r.data)?r.data:r.data?[r.data]:[];});
-ipcMain.handle('dns-set',async(_event,arg:{index:number;provider:string})=>{
-  if(!arg||!Number.isInteger(arg.index)||arg.index<1||arg.index>65535||!['cloudflare','google'].includes(arg.provider))return {ok:false,message:'Invalid DNS adapter or provider.'};
+ipcMain.handle('dns-set',async(_event,arg:{index:unknown;provider:unknown})=>{
+  if(!arg||typeof arg.index!=='number'||!Number.isInteger(arg.index)||arg.index<1||arg.index>65535||typeof arg.provider!=='string'||!['cloudflare','google'].includes(arg.provider))return {ok:false,message:'The selected adapter ID was invalid. Refresh the adapter list and select it again.'};
   return runPs({Action:'DnsSet',InterfaceIndex:arg.index,Provider:arg.provider});
 });
 ipcMain.handle('dns-restore',async(_event,arg:{index:number})=>{
@@ -182,8 +203,16 @@ ipcMain.handle('dns-restore',async(_event,arg:{index:number})=>{
   return runPs({Action:'DnsRestore',InterfaceIndex:arg.index});
 });
 ipcMain.handle('dns-flush',async()=>runPs({Action:'DnsFlush'}));
-ipcMain.handle('clean-scan',async()=>[]);
+ipcMain.handle('clean-scan',async()=>{
+  const billing=await getProEntitlement();
+  if(!billing.pro)return {ok:false,code:'PRO_REQUIRED',message:'Cleaner is part of Pro.'};
+  const r=await runPs({Action:'CleanScan'});
+  if(!r.ok)return {ok:false,code:r.code||'CLEAN_SCAN_FAILED',message:r.message};
+  return Array.isArray(r.data)?r.data:r.data?[r.data]:[];
+});
 ipcMain.handle('clean-run',async(_event,paths:unknown)=>{
   if(!Array.isArray(paths)||paths.length>2000||paths.some(x=>typeof x!=='string'||x.length>32767))return {ok:false,message:'Invalid cleanup selection.'};
-  return {ok:false,message:'Cleaner is part of Pro. Choose a plan to see the available options.',code:'PRO_REQUIRED'};
+  const billing=await getProEntitlement();
+  if(!billing.pro)return {ok:false,message:'Cleaner is part of Pro. Choose a plan to use it.',code:'PRO_REQUIRED'};
+  return runPs({Action:'CleanRun',Paths:paths});
 });
