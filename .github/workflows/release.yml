@@ -26,54 +26,69 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Configure public GitHub update source
+      - name: Validate release version and updater signing key
         shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          $parts = $env:GITHUB_REPOSITORY.Split('/')
-          $owner = $parts[0]
-          $repo = $parts[1]
-          @{ provider = 'github'; owner = $owner; repo = $repo } |
-            ConvertTo-Json | Set-Content electron/update-source.json -Encoding utf8
           $package = Get-Content package.json -Raw | ConvertFrom-Json
-          $package | Add-Member -NotePropertyName repository -NotePropertyValue "https://github.com/$owner/$repo" -Force
-          $package.build | Add-Member -NotePropertyName publish -NotePropertyValue @(@{ provider = 'github'; owner = $owner; repo = $repo }) -Force
-          $package | ConvertTo-Json -Depth 30 | Set-Content package.json -Encoding utf8
+          $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $tagVersion = $env:GITHUB_REF_NAME.TrimStart('v')
+          if ($package.version -ne $tagVersion -or $config.version -ne $tagVersion) {
+            throw "Release tag $tagVersion must match package and Tauri versions ($($package.version), $($config.version))."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw 'Add the TAURI_SIGNING_PRIVATE_KEY GitHub Actions secret. It signs automatic updates.'
+          }
 
-      - name: Build application
-        run: pnpm run build
+      - name: Build signed updater artifacts
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm exec tauri build
 
-      - name: Require Windows code-signing credentials
+      - name: Create signed-update feed
         shell: pwsh
-        env:
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK)) {
-            throw 'Add the WIN_CSC_LINK GitHub Actions secret with your trusted Windows signing certificate (base64 PFX/P12).'
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $bundle = Join-Path $PWD 'src-tauri/target/release/bundle/nsis'
+          $archive = Get-ChildItem $bundle -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $archive) { throw 'Tauri NSIS installer was not generated.' }
+          $signaturePath = "$($archive.FullName).sig"
+          if (-not (Test-Path -LiteralPath $signaturePath)) { throw 'Tauri updater signature was not generated.' }
+          $assetName = [uri]::EscapeDataString($archive.Name)
+          $feed = @{
+            version = $version
+            notes = "Northstar PC Care $version"
+            pub_date = [DateTime]::UtcNow.ToString('o')
+            platforms = @{
+              'windows-x86_64' = @{
+                url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/$assetName"
+                signature = (Get-Content -LiteralPath $signaturePath -Raw).Trim()
+              }
+            }
           }
-          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_KEY_PASSWORD)) {
-            throw 'Add the WIN_CSC_KEY_PASSWORD GitHub Actions secret with the certificate password.'
-          }
+          $feed | ConvertTo-Json -Depth 10 | Set-Content 'src-tauri/target/release/bundle/nsis/latest.json' -Encoding utf8
 
-      - name: Package Windows installer and update metadata
-        env:
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: pnpm exec electron-builder --win nsis --publish never
-
-      - name: Publish GitHub Release
+      - name: Publish GitHub Release and update feed
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $assets = @(Get-ChildItem release -File | Where-Object {
-            $_.Name -match '^Northstar PC Care Setup .*\.exe(\.blockmap)?$' -or $_.Name -eq 'latest.yml'
-          })
-          if (!($assets | Where-Object Name -eq 'latest.yml')) { throw 'latest.yml update metadata was not generated.' }
-          if (!($assets | Where-Object Name -match '^Northstar PC Care Setup .*\.exe$')) { throw 'Windows installer was not generated.' }
-          $files = @($assets | ForEach-Object { $_.FullName })
+          $bundle = Join-Path $PWD 'src-tauri/target/release/bundle/nsis'
+          $files = @(
+            Get-ChildItem $bundle -File | Where-Object {
+              $_.Name -match '\.exe(\.sig)?$' -or $_.Name -eq 'latest.json'
+            } | ForEach-Object { $_.FullName }
+          )
+          if (!($files | Where-Object { $_ -match '\.exe$' })) { throw 'Windows installer was not generated.' }
+          if (!($files | Where-Object { $_ -match '\.exe\.sig$' })) { throw 'Signed Windows update installer was not generated.' }
+          if (!($files | Where-Object { $_ -match 'latest\.json$' })) { throw 'Automatic update metadata was not generated.' }
           gh release create $tag @files --title "Northstar PC Care $tag" --generate-notes --verify-tag

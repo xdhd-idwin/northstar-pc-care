@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, ArrowUpRight, Bookmark, Check, ChevronRight, CircleHelp, Cpu, Gauge, Globe, HardDrive, LayoutDashboard, MemoryStick, Network as NetworkIcon, Play, Plus, Rocket, Search, Share2, ShieldCheck, Sparkles, Trash2, Zap } from 'lucide-react';
 import { catalog } from './shared/catalog';
+import { checkForAppUpdate } from './updater';
 import './plan.css';
 import type { BillingStatus, Category, CleanerFile, DnsAdapter, Metrics, ProfileProgress, Snapshot, StartupItem } from './shared/types';
 
@@ -23,9 +24,10 @@ export default function App(){
   const requestProCheckout=async(term:'monthly'|'lifetime')=>{setPlanNotice('Starting secure Stripe Checkout…');try{const result=await window.northstar.startCheckout(term);setPlanNotice(result.message);if(result.ok){const started=Date.now();const poll=window.setInterval(async()=>{await refreshBilling();if(Date.now()-started>180000)window.clearInterval(poll);},3000);}}catch(error){setPlanNotice(String(error));}};
   const refresh=async()=>{try{const m=await window.northstar.getMetrics();if(m)setMetrics(m);}catch{}try{setSnapshots(await window.northstar.getSnapshots());}catch{}};
   useEffect(()=>{void refresh();void refreshBilling();const t=window.setInterval(()=>void refresh(),5000);const b=window.setInterval(()=>void refreshBilling(),60000);return()=>{clearInterval(t);clearInterval(b);};},[]);
+  useEffect(()=>{void checkForAppUpdate(setNotice);},[]);
   useEffect(()=>{try{const saved=JSON.parse(localStorage.getItem('northstar-profiles')||'[]');if(Array.isArray(saved))setProfiles(saved.filter((p):p is TweakProfile=>!!p&&typeof p.id==='string'&&typeof p.name==='string'&&Array.isArray(p.tweakIds)&&p.tweakIds.every((id:unknown)=>typeof id==='string')));}catch{setProfiles([]);}},[]);
   useEffect(()=>{localStorage.setItem('northstar-profiles',JSON.stringify(profiles));},[profiles]);
-  useEffect(()=>window.northstar.onProfileProgress(setProfileProgress),[]);
+  useEffect(()=>{let disposed=false;let unlisten:(()=>void)|undefined;void window.northstar.onProfileProgress(setProfileProgress).then(stop=>{if(disposed)stop();else unlisten=stop;}).catch(error=>setNotice(`Profile progress is unavailable: ${String(error)}`));return()=>{disposed=true;unlisten?.();};},[]);
   const loadStartup=async()=>{const [runItems,scheduledItems]=await Promise.all([window.northstar.getStartup(),window.northstar.getScheduledStartup()]);setStartup([...runItems,...scheduledItems]);};
   const loadDns=async()=>{const adapters=await window.northstar.getDnsAdapters();setDnsAdapters(adapters);if(adapters.length&&(!selectedDns||!adapters.some(a=>a.index===selectedDns)))setSelectedDns(adapters[0].index);};
   useEffect(()=>{if(view==='Startup'){setBusy(true);loadStartup().catch(e=>setNotice(String(e))).finally(()=>setBusy(false));}if(view==='Network'){setBusy(true);loadDns().catch(e=>setNotice(String(e))).finally(()=>setBusy(false));}},[view]);

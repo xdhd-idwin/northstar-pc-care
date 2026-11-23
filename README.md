@@ -1,92 +1,54 @@
 # Northstar PC Care
 
-A Windows 10/11 desktop utility currently built with Electron, React, TypeScript, and a constrained PowerShell backend. Its catalog has 143 distinct entries across the requested categories: 107 are actionable through reversible registry, service-startup, power-plan, power-setting, or scheduled-task changes and 36 remain review-only with an explanation of why they need hardware-specific, user-selected, or security-sensitive handling. The network page includes DNS provider selection, restore, DNS cache flush, and backed-up per-adapter Nagle controls. It also includes a system dashboard, cleanup preview, startup Run-key management, and locally saved/shareable tweak profiles.
+Northstar is a Windows 10/11 desktop utility for reviewing and applying reversible system tweaks. The desktop host and command validation layer use Rust and Tauri 2; the interface uses React and TypeScript. The current Windows operations adapter still invokes the audited PowerShell engine in `electron/powershell/SystemOps.ps1`; a complete Rust port of every Windows operation is not finished.
 
-## Safety and scope
+The catalog contains 143 entries. 107 are marked actionable through supported registry, service-startup, power, or task operations; 36 are review-only because they need device-specific work or a safer implementation. “Actionable” is not a performance guarantee, and Windows build, drivers, or device policy may still prevent an operation.
 
-System tuning is hardware-, driver-, and Windows-build-dependent. This project deliberately exposes the catalog as a reviewable set of proposed policy/value changes; it does not bundle opaque “debloat” commands, force power plans, disable security, or apply service changes in bulk. Before enabling a tweak, the app asks whether to attempt a Windows restore point, continue with per-setting backups only, or cancel. Windows restore points are best-effort and may be disabled by policy; the app's own exact-value backups are saved either way. Restart-required changes are marked. Review each description before changing a production machine.
-
-Some requested controls (CPU C-states, timer resolution, vendor GPU controls, per-adapter TCP/DNS, global fullscreen behavior) require firmware, driver, adapter, or per-game integration. Their catalog entries are informational and deliberately non-applicable until a device-specific implementation is added. The UI shows this as “Review only”. Do not advertise these as performance guarantees.
-
-## Requirements
+## Requirements and local development
 
 - Windows 10 22H2 or Windows 11
-- Node.js 22.12 or newer and npm
+- Node.js 22.12 or newer and pnpm 11.25
+- Rust stable, Visual Studio C++ Build Tools, and the Windows 10/11 SDK
 - PowerShell 5.1 or newer
 
-## Run locally
+Run `pnpm install`, then `pnpm dev` to launch the Tauri app. Run `pnpm build` to create the NSIS installer and signed updater archive. A local updater-signing key is needed for updater artifacts; routine frontend checks can run with `pnpm run build:web`.
 
-1. Extract this folder to a writable location.
-2. In PowerShell, change to this project folder and run `npm install`.
-3. Run `npm run dev` to launch Vite and Electron.
-4. The packaged app requests administrator access when it opens. Accept one Windows UAC prompt per app launch; system changes then run in the already elevated app, without another prompt for each tweak. If you cancel, Windows closes the launch; start the app again and accept UAC to use it.
-5. For local development builds, run `npm run build`. A distributable installer requires the trusted code-signing certificate described below; `npm run dist` fails instead of creating an unsigned release installer.
+The packaged Windows app requests administrator access so system operations can run. The Tauri command layer validates operations against the embedded catalog before calling the Windows adapter; renderer input cannot provide arbitrary commands or registry paths. Changes are backed up per setting. Restore point creation is best-effort and can be declined in favor of app-managed backups.
 
-`npm run dev` uses Electron's isolated preload bridge and a strict Content Security Policy. For development, launch the terminal as Administrator before starting Electron if you need to apply system changes. Renderer code cannot invoke arbitrary PowerShell or shell commands. The main process validates tweak IDs against the catalog before calling the bundled script.
+## Tweaks, profiles, and plans
 
-## Plans and updates
+Free permits up to 15 active tweaks and includes the dashboard, DNS tools, startup manager, and revert controls. Pro unlocks unlimited tweaks, Cleaner, and the rest of the Pro features for €2/month or €20 one-time. Checkout is handled by the Cloudflare Worker in `billing-service/`; Stripe secrets remain in Cloudflare. The Stripe IDs currently in the Worker are sandbox/test values. Configure and verify separate Live products, prices, webhook, and API secret before accepting real customer payments.
 
-Free permits up to 15 active catalog tweaks and includes the dashboard, DNS tools, startup manager, and app-managed revert controls. Pro offers unlimited tweaks, Cleaner, and all Northstar features for €2/month or €20 one-time. Checkout is implemented through the Cloudflare Worker in `billing-service/`; the desktop app contains only its public Worker URL, while Stripe API and webhook secrets stay in Cloudflare. The current Worker and price IDs are configured for Stripe Sandbox. Configure separate Live prices, API key, webhook signing secret, and deploy the Worker before accepting real payments.
+Profiles save the selected tweak IDs in the current Windows user's app data. Shared profiles are validated JSON and can be sent to friends. Applying a profile checks plan limits and reports progress; Pro state is not stored in a profile.
 
-Profiles store the currently active tweak IDs in local app storage. Shared profiles are portable JSON copied through the system clipboard; importing one validates it against the current allowlisted catalog. Applying a profile enables its included tweaks and leaves other active tweaks as-is. Free-plan limits still apply when profiles are applied. Profile data is local to the current Windows user and is not part of the billing entitlement, so it does not affect Pro status after an app update.
+Cleaner previews eligible temporary/cache files older than seven days before removal. It rechecks paths, age, and reparse-point status when deleting. DNS settings use family-specific Windows DNS client objects and save original values per adapter so the user can restore them. The network view includes cache flush and backed-up per-adapter Nagle controls.
 
-Cleaner is Pro-only and previews eligible temporary/cache files older than seven days before removal. It rechecks allowed directories, age, and reparse-point status when removing files. DNS changes use Windows' family-specific DNS client objects to set or restore IPv4 and IPv6 independently; the original values are saved per adapter.
+Pro entitlement is server-side and associated with a stable installation ID under `%LOCALAPPDATA%\NorthstarPcCare`. Updating the app keeps this ID and the profile/browser storage, so a current Pro entitlement remains active after an update. Entitlement is installation-bound; it does not automatically transfer to another Windows account or PC.
 
-The packaged app checks the public `xdhd-idwin/northstar-pc-care` GitHub Releases feed before showing its main window. If a newer release exists, Northstar downloads and installs it, then relaunches; if no update exists or the check fails, the app opens normally. The app stores a stable billing installation ID under `%LOCALAPPDATA%\NorthstarPcCare`, and the Worker stores Pro entitlements in D1. Updating the app leaves this ID and the server-side entitlement intact, so Pro remains active on that Windows account and PC. The entitlement does not automatically transfer to another PC or Windows account.
+## Automatic updates and releases
 
-The release workflow builds the Windows installer and `latest.yml`, then publishes them as release assets when a version tag is pushed. Releases require the trusted Windows signing secrets below. The locally installed `0.1.2` build is not a GitHub release. The next release must use a higher version (`0.1.3`) so it can update that build. Publish only after Live billing has been configured if real customers are expected to purchase Pro.
+On launch, Northstar checks the GitHub Releases update feed. When a newer signed version is available, it downloads and installs the update, then relaunches. If offline or the feed is unavailable, the existing app continues to open. Tauri verifies every update with the public key in `src-tauri/tauri.conf.json`; unsigned update artifacts are rejected.
 
-## Windows code signing for releases
+Pushing a `v*` tag builds and publishes the Windows installer, updater signature, and `latest.json` feed. The tag must match `package.json` and `src-tauri/tauri.conf.json`. GitHub Actions needs the `TAURI_SIGNING_PRIVATE_KEY` secret. Its matching private key is kept outside the repository at `%LOCALAPPDATA%\NorthstarPcCare\tauri-updater.key`; keep a secure backup because losing it prevents future in-app updates. Never commit or paste that private key. The public key is safe to include in source.
 
-Windows SmartScreen may warn that a new app is unrecognized. Northstar's current `v0.1.1` installer is unsigned. To publish signed releases, obtain a trusted Windows Authenticode signing identity from a certificate authority or a supported cloud signing service. A new signature identifies the publisher but may still need download reputation before SmartScreen stops warning.
+Updater signatures validate the update package but are separate from Windows Authenticode signing. Without a trusted Authenticode certificate, Windows may show a SmartScreen warning. Avoid publishing a version tag until the build has been reviewed and the release notes reflect the tested changes.
 
-For a PFX/P12 certificate, add these repository Actions secrets under **Settings → Secrets and variables → Actions**:
+## Windows operations limitations
 
-- `WIN_CSC_LINK`: the base64-encoded PFX/P12 certificate.
-- `WIN_CSC_KEY_PASSWORD`: its private-key password.
-
-Never commit a certificate, private key, or password to the repository. The release workflow requires both secrets and electron-builder verifies that the installer is signed before publishing. Use the same publisher identity for future releases. A self-signed certificate does not establish public SmartScreen trust.
+- Hardware metrics use Windows counters/WMI and may be absent or slow on some systems.
+- GPU utilization requires a supported Windows GPU Engine counter.
+- Ping is a one-shot latency sample to Cloudflare DNS, not game-server latency.
+- Restore point creation can fail if System Protection is off, policy blocks it, or a restore point was created recently.
+- Review-only catalog entries are descriptions, not executable tweaks.
+- System operations still run through the existing PowerShell adapter. The app has not yet been audited or tested across Windows versions and hardware.
 
 ## Project layout
 
 ```text
 northstar-pc-care/
-  package.json
-  tsconfig.json
-  vite.config.mts
-  electron/
-    main.ts              # Window, IPC allowlist, PowerShell bridge
-    preload.ts           # Narrow contextBridge API
-    powershell/
-      SystemOps.ps1      # Snapshot/apply/revert/monitor/cleanup operations
-  src/
-    main.tsx
-    App.tsx
-    styles.css
-    shared/catalog.ts   # 143 categorized entries (107 actionable, 36 review-only)
-    shared/types.ts
-  README.md
+  src/                    React UI, Tauri bridge, catalog, profiles, update check
+  src-tauri/              Rust Tauri shell, command validation, updater configuration
+  electron/powershell/    Existing Windows system-operation adapter
+  billing-service/        Cloudflare Worker source for checkout and entitlement
+  .github/workflows/      Signed Windows release and updater-feed workflow
 ```
-
-The requested Rust desktop migration has not been completed in this version. The current Windows environment has the Rust compiler but does not have the Visual C++ linker/build tools required to build a native Windows Tauri application. Do not describe this Electron release as a Rust build.
-
-## Reversion and data
-
-Per-tweak snapshots and an operation log are stored in `%LOCALAPPDATA%\NorthstarPcCare\`. A registry snapshot records whether each value existed and its original registry kind/data. A service snapshot records its original startup mode and delayed-start value. Startup Run entries disabled through the app are also backed up there. “Restore all” restores these app-managed entries and values; it does not reset Windows to factory defaults. Export `%LOCALAPPDATA%\NorthstarPcCare` before reinstalling Windows or removing the app.
-
-The Startup Apps page manages the current-user and all-users Windows `Run` registry keys and non-Microsoft scheduled tasks with boot or logon triggers. Microsoft Windows tasks are shown as read-only. Startup-folder shortcuts are not enumerated.
-
-Cleanup is preview-first. It proposes files older than seven days under temp folders, DirectX and vendor shader caches, and Chromium/Firefox profile caches while the browsers are closed. It does not touch Prefetch or Windows Update servicing state.
-
-## Extending the engine
-
-Add a catalog item with an explicit registry path, value name, registry kind, and desired data. Mark it `applicable: true` only after confirming the policy on supported Windows versions and testing both apply and revert on a disposable VM. Never accept registry paths, commands, or filesystem paths from renderer input. Add service, scheduled-task, or cleaner operations as separate typed allowlisted handlers with their own snapshot/revert logic; do not turn these into generic command execution.
-
-## Limitations
-
-- Hardware metrics use Windows performance counters and WMI and may be unavailable or slow on some systems.
-- GPU utilization requires a Windows GPU Engine counter and can be absent on older drivers.
-- Network “ping” is a one-shot latency probe to Cloudflare DNS, not a promise about game-server latency.
-- Windows Restore Point creation can fail if System Protection is off, the machine is managed, or a restore point was created too recently.
-- Review-only catalog items are documented ideas, not executable tweaks.
-- This scaffold is not digitally signed and has not been audited for production deployment.
